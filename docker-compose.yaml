@@ -1,0 +1,29 @@
+services:
+  llama-qwen3-coder:
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    container_name: llama-server-qwen3-coder
+
+    gpus: all
+
+    volumes:
+      - /opt/stacks/shared-ai-models:/models:ro
+
+    ports:
+      - "18080:18080"
+
+    command:
+      [
+        "-m", "/models/Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf",
+        "--host", "0.0.0.0",
+        "--port", "18080",
+        "--n-gpu-layers", "999"
+      ]
+
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:18080/health >/dev/null || exit 1"]
+      interval: 20s
+      timeout: 5s
+      retries: 10
+      start_period: 180s
+
+    restart: unless-stopped

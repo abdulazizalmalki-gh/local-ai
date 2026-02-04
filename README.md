@@ -36,14 +36,14 @@ Download using one of the methods below:
 
 #### Using Hugging Face CLI (recommended)
 
-**WSL2/Ubuntu users:** Install dependencies first:
+**Windows (WSL2)/Ubuntu users:** Install dependencies first:
 ```bash
 sudo apt update && sudo apt install -y python3-venv python3-pip
 ```
 
 **Install the CLI:**
 
-Standalone (Linux/macOS/WSL2):
+Standalone (Linux/macOS/Windows WSL2):
 ```bash
 curl -LsSf https://hf.co/cli/install.sh | bash
 ```
@@ -122,7 +122,7 @@ Choose your platform below:
 
 #### Linux / Windows (WSL2) / Intel Mac
 
-**With NVIDIA GPU (Linux/WSL2 only):**
+**With NVIDIA GPU (Linux/Windows WSL2 only):**
 
 ```bash
 MODEL_FILE=<model-filename> docker compose --profile nvidia-cuda up -d

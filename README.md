@@ -11,8 +11,7 @@ A self-hosted local LLM setup using llama.cpp and Open WebUI.
 
 - Docker and Docker Compose
 - A GGUF model file in `~/ai-models/` (see examples below, or bring your own—any single-file `.gguf` model works)
-- **Disk space:** 3-4GB with the lightweight model, 15-18GB with GPT-OSS-20B, or 22-25GB with the recommended model (includes Docker images and data)
-- **macOS only:** [Homebrew](https://brew.sh) (for installing dependencies)
+- **Disk space:** 4-5GB with the lightweight model, 10-12GB with the balanced model, or 28-32GB with the recommended model (includes Docker images and data)
 
 ## Quick Start
 
@@ -22,9 +21,9 @@ Choose a model based on your hardware and internet connection:
 
 | Model | Size | Best For |
 |-------|------|----------|
-| Qwen3-0.6B (lightweight) | ~0.5GB | Limited bandwidth or testing |
-| GPT-OSS-20B | ~12GB | Balanced performance and size |
-| Qwen3-Coder-30B-A3B-Instruct (recommended) | ~19GB | Better quality, requires decent hardware |
+| Qwen3.5-2B (lightweight) | ~1.2GB | Limited bandwidth or testing |
+| Qwen3.5-9B (balanced) | ~5.7GB | Good performance with moderate hardware |
+| Qwen3.5-35B-A3B (recommended) | ~22GB | Best quality, requires decent hardware |
 
 Create the models directory:
 
@@ -55,63 +54,63 @@ brew install huggingface-cli
 
 **Download:**
 
-Qwen3-0.6B (~0.5GB):
+**Qwen3.5-2B (~1.2GB):**
 ```bash
-hf download unsloth/Qwen3-0.6B-GGUF Qwen3-0.6B-Q4_K_M.gguf --local-dir ~/ai-models/
+hf download unsloth/Qwen3.5-2B-GGUF Qwen3.5-2B-Q4_0.gguf --local-dir ~/ai-models/
 ```
 
-GPT-OSS-20B (~12GB):
+**Qwen3.5-9B (~5.7GB):**
 ```bash
-hf download unsloth/gpt-oss-20b-GGUF gpt-oss-20b-Q4_K_M.gguf --local-dir ~/ai-models/
+hf download unsloth/Qwen3.5-9B-GGUF Qwen3.5-9B-Q4_K_M.gguf --local-dir ~/ai-models/
 ```
 
-Qwen3-Coder-30B (~19GB):
+**Qwen3.5-35B-A3B (~22GB):**
 ```bash
-hf download unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf --local-dir ~/ai-models/
+hf download unsloth/Qwen3.5-35B-A3B-GGUF Qwen3.5-35B-A3B-Q4_K_M.gguf --local-dir ~/ai-models/
 ```
 
 #### Using wget
 
 Install wget if needed: Ubuntu/Debian: `sudo apt install wget` | Fedora: `sudo dnf install wget` | macOS: `brew install wget` | Windows: `winget install wget`
 
-Qwen3-0.6B (~0.5GB):
+**Qwen3.5-2B (~1.2GB):**
 ```bash
-wget -O ~/ai-models/Qwen3-0.6B-Q4_K_M.gguf \
-  "https://huggingface.co/unsloth/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q4_K_M.gguf?download=true"
+wget -O ~/ai-models/Qwen3.5-2B-Q4_0.gguf \
+  "https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-Q4_0.gguf?download=true"
 ```
 
-GPT-OSS-20B (~12GB):
+**Qwen3.5-9B (~5.7GB):**
 ```bash
-wget -O ~/ai-models/gpt-oss-20b-Q4_K_M.gguf \
-  "https://huggingface.co/unsloth/gpt-oss-20b-GGUF/resolve/main/gpt-oss-20b-Q4_K_M.gguf?download=true"
+wget -O ~/ai-models/Qwen3.5-9B-Q4_K_M.gguf \
+  "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf?download=true"
 ```
 
-Qwen3-Coder-30B (~19GB):
+**Qwen3.5-35B-A3B (~22GB):**
 ```bash
-wget -O ~/ai-models/Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf \
-  "https://huggingface.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF/resolve/main/Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf?download=true"
+wget -O ~/ai-models/Qwen3.5-35B-A3B-Q4_K_M.gguf \
+  "https://huggingface.co/unsloth/Qwen3.5-35B-A3B-GGUF/resolve/main/Qwen3.5-35B-A3B-Q4_K_M.gguf?download=true"
 ```
 
 #### Using curl
 
 curl is pre-installed on macOS, most Linux distributions, and Windows 10/11.
 
-Qwen3-0.6B (~0.5GB):
+**Qwen3.5-2B (~1.2GB):**
 ```bash
-curl -L -o ~/ai-models/Qwen3-0.6B-Q4_K_M.gguf \
-  "https://huggingface.co/unsloth/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q4_K_M.gguf?download=true"
+curl -L -o ~/ai-models/Qwen3.5-2B-Q4_0.gguf \
+  "https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-Q4_0.gguf?download=true"
 ```
 
-GPT-OSS-20B (~12GB):
+**Qwen3.5-9B (~5.7GB):**
 ```bash
-curl -L -o ~/ai-models/gpt-oss-20b-Q4_K_M.gguf \
-  "https://huggingface.co/unsloth/gpt-oss-20b-GGUF/resolve/main/gpt-oss-20b-Q4_K_M.gguf?download=true"
+curl -L -o ~/ai-models/Qwen3.5-9B-Q4_K_M.gguf \
+  "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf?download=true"
 ```
 
-Qwen3-Coder-30B (~19GB):
+**Qwen3.5-35B-A3B (~22GB):**
 ```bash
-curl -L -o ~/ai-models/Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf \
-  "https://huggingface.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF/resolve/main/Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf?download=true"
+curl -L -o ~/ai-models/Qwen3.5-35B-A3B-Q4_K_M.gguf \
+  "https://huggingface.co/unsloth/Qwen3.5-35B-A3B-GGUF/resolve/main/Qwen3.5-35B-A3B-Q4_K_M.gguf?download=true"
 ```
 
 ### Step 2: Start the Services
@@ -134,7 +133,7 @@ MODEL_FILE=<model-filename> docker compose --profile nvidia-cuda up -d
 MODEL_FILE=<model-filename> docker compose --profile cpu up -d
 ```
 
-Replace `<model-filename>` with your downloaded model, e.g., `Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf`
+Replace `<model-filename>` with your downloaded model, e.g., `Qwen3.5-35B-A3B-Q4_K_M.gguf`
 
 **Stop services:**
 
@@ -174,7 +173,7 @@ The script will:
 **Example:**
 
 ```bash
-./mac-setup.sh start Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf
+./mac-setup.sh start Qwen3.5-35B-A3B-Q4_K_M.gguf
 ```
 
 ---

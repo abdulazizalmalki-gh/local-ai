@@ -1,0 +1,4 @@
+# Machine-local configuration (not committed).
+# Managed by: ./local-ai.sh lan on|off
+# See README.md -> Configuration for all available variables.
+.env

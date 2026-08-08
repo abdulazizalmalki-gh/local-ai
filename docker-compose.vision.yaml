@@ -1,0 +1,32 @@
+# Local AI — optional vision support (multimodal models)
+# -----------------------------------------------------------------------------
+# Adds the mmproj vision projector to the llama-server container by overriding
+# its ENTRYPOINT (the base `command` flags from docker-compose.yaml are still
+# appended by Docker, so nothing is duplicated).
+#
+# Include with:
+#   docker compose -f docker-compose.yaml -f docker-compose.vision.yaml up -d
+#
+# `local-ai.sh` adds this file automatically when the mmproj GGUF is present in
+# the model directory. Set LOCALAI_MMPROJ=0 to force it off.
+#
+# IMPORTANT: keep the service names in sync with docker-compose.yaml.
+# -----------------------------------------------------------------------------
+services:
+  llama-cpu:
+    entrypoint:
+      - /app/llama-server
+      - --mmproj
+      - /models/${LOCALAI_MMPROJ_FILE:-Huihui-Qwen3.5-2B-abliterated.mmproj-Q8_0.gguf}
+
+  llama-nvidia:
+    entrypoint:
+      - /app/llama-server
+      - --mmproj
+      - /models/${LOCALAI_MMPROJ_FILE:-Huihui-Qwen3.5-2B-abliterated.mmproj-Q8_0.gguf}
+
+  llama-vulkan:
+    entrypoint:
+      - /app/llama-server
+      - --mmproj
+      - /models/${LOCALAI_MMPROJ_FILE:-Huihui-Qwen3.5-2B-abliterated.mmproj-Q8_0.gguf}

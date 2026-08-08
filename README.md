@@ -1,223 +1,184 @@
 # Local AI
 
-A self-hosted local LLM setup using llama.cpp and Open WebUI.
-
-## Services
-
-- **llama-server** - llama.cpp server running your chosen model
-- **open-webui** - Web interface for interacting with the LLM
-
-## Requirements
-
-- Docker and Docker Compose
-- A GGUF model file in `~/ai-models/` (see examples below, or bring your own—any single-file `.gguf` model works)
-- **Disk space:** 4-5GB with the lightweight model, 10-12GB with the balanced model, or 28-32GB with the recommended model (includes Docker images and data)
-
-## Quick Start
-
-### Step 1: Download a Model
-
-Choose a model based on your hardware and internet connection:
-
-| Model | Size | Best For |
-|-------|------|----------|
-| Qwen3.5-2B (lightweight) | ~1.2GB | Limited bandwidth or testing |
-| Qwen3.5-9B (balanced) | ~5.7GB | Good performance with moderate hardware |
-| Qwen3.5-35B-A3B (recommended) | ~22GB | Best quality, requires decent hardware |
-
-Create the models directory:
+One command. Any machine. A private, uncensored LLM served from your own box —
+llama.cpp inference + Open WebUI, fully containerized, no login, no cloud.
 
 ```bash
-mkdir -p ~/ai-models/
+./local-ai.sh
 ```
 
-Download using one of the methods below:
+That's it. The script discovers what it's running on (OS, Docker, GPU), installs
+Docker if it's missing, downloads the model, and boots the best possible
+configuration for that machine. Windows (WSL2), Linux and macOS are all first-
+class citizens.
 
-#### Using Hugging Face CLI (recommended)
+## What you get
 
-**Windows (WSL2)/Ubuntu users:** Install dependencies first:
-```bash
-sudo apt update && sudo apt install -y python3-venv python3-pip
-```
+| Service | Image | Purpose |
+|---------|-------|---------|
+| `local-ai-llama-server` | `ghcr.io/ggml-org/llama.cpp:server[-cuda\|-vulkan]` | OpenAI-compatible LLM API (`:18080/v1`) |
+| `local-ai-open-webui` | `ghcr.io/open-webui/open-webui:latest` | Chat UI, userless session (`:3000`) |
 
-**Install the CLI:**
+**Default model:** `huihui-ai/Huihui-Qwen3.5-2B-abliterated` — an
+abliterated (uncensored) Qwen3.5-2B, quantized to Q4_K_M (~1.3 GB) by
+[mradermacher](https://huggingface.co/mradermacher/Huihui-Qwen3.5-2B-abliterated-GGUF).
+It is multimodal: the vision projector (mmproj) is loaded automatically when
+present, so you can drop images into the chat.
 
-Standalone (Linux/macOS/Windows WSL2):
-```bash
-curl -LsSf https://hf.co/cli/install.sh | bash
-```
-
-Homebrew (macOS/Linux):
-```bash
-brew install huggingface-cli
-```
-
-**Download:**
-
-**Qwen3.5-2B (~1.2GB):**
-```bash
-hf download unsloth/Qwen3.5-2B-GGUF Qwen3.5-2B-Q4_0.gguf --local-dir ~/ai-models/
-```
-
-**Qwen3.5-9B (~5.7GB):**
-```bash
-hf download unsloth/Qwen3.5-9B-GGUF Qwen3.5-9B-Q4_K_M.gguf --local-dir ~/ai-models/
-```
-
-**Qwen3.5-35B-A3B (~22GB):**
-```bash
-hf download unsloth/Qwen3.5-35B-A3B-GGUF Qwen3.5-35B-A3B-Q4_K_M.gguf --local-dir ~/ai-models/
-```
-
-#### Using wget
-
-Install wget if needed: Ubuntu/Debian: `sudo apt install wget` | Fedora: `sudo dnf install wget` | macOS: `brew install wget` | Windows: `winget install wget`
-
-**Qwen3.5-2B (~1.2GB):**
-```bash
-wget -O ~/ai-models/Qwen3.5-2B-Q4_0.gguf \
-  "https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-Q4_0.gguf?download=true"
-```
-
-**Qwen3.5-9B (~5.7GB):**
-```bash
-wget -O ~/ai-models/Qwen3.5-9B-Q4_K_M.gguf \
-  "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf?download=true"
-```
-
-**Qwen3.5-35B-A3B (~22GB):**
-```bash
-wget -O ~/ai-models/Qwen3.5-35B-A3B-Q4_K_M.gguf \
-  "https://huggingface.co/unsloth/Qwen3.5-35B-A3B-GGUF/resolve/main/Qwen3.5-35B-A3B-Q4_K_M.gguf?download=true"
-```
-
-#### Using curl
-
-curl is pre-installed on macOS, most Linux distributions, and Windows 10/11.
-
-**Qwen3.5-2B (~1.2GB):**
-```bash
-curl -L -o ~/ai-models/Qwen3.5-2B-Q4_0.gguf \
-  "https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-Q4_0.gguf?download=true"
-```
-
-**Qwen3.5-9B (~5.7GB):**
-```bash
-curl -L -o ~/ai-models/Qwen3.5-9B-Q4_K_M.gguf \
-  "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf?download=true"
-```
-
-**Qwen3.5-35B-A3B (~22GB):**
-```bash
-curl -L -o ~/ai-models/Qwen3.5-35B-A3B-Q4_K_M.gguf \
-  "https://huggingface.co/unsloth/Qwen3.5-35B-A3B-GGUF/resolve/main/Qwen3.5-35B-A3B-Q4_K_M.gguf?download=true"
-```
-
-### Step 2: Start the Services
-
-Choose your platform below:
-
----
-
-#### Linux / Windows (WSL2) / Intel Mac
-
-**With NVIDIA GPU (Linux/Windows WSL2 only):**
+## Quick start
 
 ```bash
-MODEL_FILE=<model-filename> docker compose --profile nvidia-cuda up -d
+git clone https://github.com/abdulazizalmalki-gh/local-ai.git && cd local-ai
+./local-ai.sh                 # start (detects everything)
 ```
 
-**CPU only:**
+First run downloads the model (~1.3 GB) and the container images, so give it a
+few minutes. Then open **http://localhost:3000** — no sign-up, no password.
 
 ```bash
-MODEL_FILE=<model-filename> docker compose --profile cpu up -d
+./local-ai.sh status          # what's running & healthy
+./local-ai.sh logs            # follow container logs
+./local-ai.sh lan on|off      # expose Open WebUI to the LAN (0.0.0.0) / back to localhost
+./local-ai.sh stop            # tear everything down (models are kept)
+./local-ai.sh update          # pull the latest container images
+./local-ai.sh detect          # show the detection plan without changing anything
 ```
 
-Replace `<model-filename>` with your downloaded model, e.g., `Qwen3.5-35B-A3B-Q4_K_M.gguf`
+## How it works
 
-**Stop services:**
+On every `start`, the script:
+
+1. **Detects the machine** — OS (Linux / WSL2 / macOS), CPU arch, GPU type.
+2. **Ensures Docker** — if missing, installs it (`apt` / `dnf` / `pacman` /
+   Homebrew), starts the daemon, and works around the docker-group permission
+   dance automatically.
+3. **Picks a GPU profile:**
+
+   | Machine | Profile | llama.cpp image | Flags |
+   |---------|---------|-----------------|-------|
+   | NVIDIA GPU | `nvidia` | `server-cuda` | all layers on GPU, flash-attn, quantized KV cache, 16k ctx |
+   | AMD / Intel GPU | `vulkan` | `server-vulkan` | same, via Vulkan |
+   | Anything else | `cpu` | `server` | auto-threaded, 8k ctx |
+
+4. **Fetches the model** if not already in `~/ai-models` (resumable download,
+   size-verified; also grabs the mmproj vision projector).
+5. **Boots the stack** via `docker compose` — llama-server first, Open WebUI
+   linked to it over the internal `llama-backend` network alias.
+   Compose v2 is installed automatically too, if Docker is present without it
+   (package manager first: `apt`/`dnf`/`pacman`/Homebrew; official static
+   binary download as the cross-distro fallback).
+6. **Degrades gracefully** — if a GPU profile fails to come up (e.g. a card
+   without working Vulkan drivers), it tears down and restarts on CPU
+   automatically, and tells you about it.
+
+## Platform notes
+
+| Platform | Docker install | GPU support |
+|----------|----------------|-------------|
+| Linux (any distro) | `apt` / `dnf` / `pacman` | CUDA (NVIDIA), Vulkan (AMD/Intel), CPU |
+| Windows (WSL2) | Docker Desktop, or `apt` inside WSL | CUDA (NVIDIA, via WSL drivers), CPU |
+| macOS (Intel & Apple Silicon) | Docker Desktop via Homebrew | CPU (Docker containers cannot reach the Metal GPU — Apple Silicon runs the arm64 CPU build; fast enough for a 2B model) |
+
+### NVIDIA prerequisites
+
+- **Docker Desktop (macOS / WSL2):** GPU support works out of the box.
+- **Native Linux:** Docker must have the `nvidia` runtime. If it doesn't, the
+  script offers to install `nvidia-container-toolkit` (official NVIDIA repo);
+  decline and it falls back to CPU.
+
+### Apple Silicon
+
+Docker Desktop on macOS runs Linux containers in a VM — there is no Metal
+passthrough, so the container uses the CPU. If you want Metal acceleration,
+run `llama-server` natively on the host and point Open WebUI at it:
 
 ```bash
-docker compose --profile <profile> down
+LOCALAI_OPENAI_BASE=http://host.docker.internal:18080/v1 ./local-ai.sh start
 ```
 
----
+(the compose file is otherwise identical).
 
-#### Apple Silicon Mac (M1/M2/M3/M4/M5)
+## Configuration
 
-Apple Silicon Macs require native llama.cpp installation to use Metal GPU acceleration. A helper script is provided to simplify the setup.
+Everything is overridable via environment variables, or a `.env` file in this
+directory (docker compose reads it automatically; exported env vars win).
 
-**Start services:**
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `LOCALAI_MODEL_REPO` | `mradermacher/Huihui-Qwen3.5-2B-abliterated-GGUF` | HF repo hosting the GGUF |
+| `LOCALAI_MODEL_FILE` | `Huihui-Qwen3.5-2B-abliterated.Q4_K_M.gguf` | GGUF to serve |
+| `LOCALAI_MODEL_ALIAS` | `Qwen3.5-2B-Abliterated (Uncensored)` | Name shown in Open WebUI / the API (`llama-server --alias`) |
+| `LOCALAI_MMPROJ_FILE` | `Huihui-Qwen3.5-2B-abliterated.mmproj-Q8_0.gguf` | Vision projector |
+| `LOCALAI_MMPROJ` | `1` | Set `0` to disable vision |
+| `LOCALAI_MODEL_DIR` | `~/ai-models` | Where models live (mounted read-only) |
+| `LOCALAI_LLAMA_PORT` | `18080` | llama.cpp API port (127.0.0.1 only) |
+| `LOCALAI_WEBUI_PORT` | `3000` | Open WebUI port |
+| `LOCALAI_WEBUI_BIND` | `127.0.0.1` | Open WebUI bind address. `0.0.0.0` = LAN-accessible (see Security) |
+| `LOCALAI_WEBUI_AUTH` | `false` | Set `true` to require login on Open WebUI (userless by default) |
+| `LOCALAI_OPENAI_BASE` | `http://llama-backend:18080/v1` | OpenAI-compatible base URL Open WebUI talks to (point at a native host server with `http://host.docker.internal:PORT/v1`) |
+| `LOCALAI_CTX_GPU` / `LOCALAI_CTX_CPU` | `16384` / `8192` | Context size per profile |
+| `LOCALAI_REASONING` | `off` | llama.cpp `--reasoning` mode. `off` = direct answers (default; the 2B model's thinking phase is very long); `on`/`auto` re-enables reasoning |
+| `LOCALAI_FORCE` | *(auto)* | `cpu` \| `nvidia` \| `vulkan` — skip detection |
+| `LOCALAI_API_KEY` | `local-ai` | Dummy key sent to llama.cpp (not a secret) |
+| `LOCALAI_STATE_DIR` | `~/.local/share/local-ai` | Script state (last profile) |
+
+Example — serve a different model:
 
 ```bash
-./mac-setup.sh start <model-filename>
+LOCALAI_MODEL_FILE=My-Custom-Q5_K_M.gguf LOCALAI_MODEL_REPO=you/your-GGUF ./local-ai.sh start
 ```
 
-The script will:
-1. Check for (and offer to install) llama.cpp via Homebrew
-2. Start llama-server with Metal acceleration
-3. Start Open WebUI in Docker
+## Without the script
 
-**Stop services:**
+The compose files work standalone — the script is just the smart entry point:
 
 ```bash
-./mac-setup.sh stop
+# CPU
+docker compose --profile cpu up -d
+# NVIDIA
+docker compose --profile nvidia up -d
+# AMD / Intel (Vulkan)
+docker compose --profile vulkan up -d
+# + vision projector (multimodal)
+docker compose -f docker-compose.yaml -f docker-compose.vision.yaml --profile cpu up -d
 ```
 
-**Check status:**
+## Security
 
-```bash
-./mac-setup.sh status
-```
+- Every published port binds to **127.0.0.1** by default — nothing is exposed
+  to your LAN unless you opt in.
+- **LAN access is opt-in:** `./local-ai.sh lan on` rebinds Open WebUI to
+  `0.0.0.0` (persisted in the local `.env`, gitignored); `./local-ai.sh lan
+  off` reverts it. The llama.cpp API port stays on 127.0.0.1 either way.
+  ⚠ Open WebUI runs **userless** (`LOCALAI_WEBUI_AUTH=false`) — on a LAN bind,
+  anyone who can reach the port can use the model. Fine on a trusted home/office
+  network; don't expose it to the internet, or require login by setting
+  `LOCALAI_WEBUI_AUTH=true` in `.env`.
+- The `OPENAI_API_KEY` is a dummy non-secret placeholder llama.cpp ignores.
+- Telemetry is off (`ANONYMIZED_TELEMETRY=false`), Ollama integration is off.
+- Models are mounted **read-only**; containers run as their image defaults.
+- Nothing is ever bound to `0.0.0.0` on the host side unless you run
+  `lan on` (the `--host 0.0.0.0` inside the container is required and safe —
+  it only listens on the container's private network, reachable via the
+  published port).
 
-**Example:**
+## Troubleshooting
 
-```bash
-./mac-setup.sh start Qwen3.5-35B-A3B-Q4_K_M.gguf
-```
-
----
-
-### Step 3: Open the Web Interface
-
-Access Open WebUI at http://localhost:3000
-
-## Platform Summary
-
-| Platform | Method | GPU Support |
-|----------|--------|-------------|
-| Linux (x86_64) | Docker | NVIDIA CUDA or CPU |
-| Windows (WSL2) | Docker | NVIDIA CUDA or CPU |
-| Intel Mac | Docker | CPU only |
-| Apple Silicon Mac | Native + Docker | Metal (via native llama.cpp) |
-
-## Ports
-
-| Service | Port |
-|---------|------|
-| llama.cpp API | 18080 |
-| Open WebUI | 3000 |
-
-## Windows Notes
-
-Requirements for NVIDIA GPU support:
-
-- Docker Desktop with WSL2 backend enabled
-- NVIDIA GPU drivers installed on Windows
-- NVIDIA CUDA support in WSL2
-
-If `gpus: all` doesn't work, edit `docker-compose.yaml` and replace it with:
-
-```yaml
-deploy:
-  resources:
-    reservations:
-      devices:
-        - driver: nvidia
-          count: all
-          capabilities: [gpu]
-```
+- **`permission denied while trying to connect to the Docker daemon socket`** —
+  your user isn't in the `docker` group yet (or Docker was just installed).
+  The script falls back to `sudo` for the session; log out/in (or
+  `newgrp docker`) to make it permanent.
+- **GPU profile fell back to CPU** — run `./local-ai.sh detect` and check the
+  GPU line. For NVIDIA on native Linux, install the toolkit (the script offers
+  to) or set `LOCALAI_FORCE=nvidia` to retry. For Vulkan, your card/driver may
+  not expose a working device to the container — CPU is the safe fallback.
+- **Slow first start** — the script downloads the model and images on first
+  boot; subsequent starts are fast.
+- **Disk space** — model ~1.3 GB (Q4_K_M) + ~0.4 GB mmproj + container images
+  (~4 GB). Keep ~6 GB free.
+- **WSL2 GPU** — you need NVIDIA drivers *on Windows* (they expose `nvidia-smi`
+  inside WSL). Docker Desktop handles the rest.
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).

@@ -19,6 +19,9 @@ class citizens.
 | `local-ai-llama-server` | `ghcr.io/ggml-org/llama.cpp:server[-cuda\|-vulkan]` | OpenAI-compatible LLM API (`:18080/v1`) |
 | `local-ai-open-webui` | `ghcr.io/open-webui/open-webui:latest` | Chat UI, userless session (`:3000`) |
 
+Everything binds to **127.0.0.1** on the host by default — nothing is exposed
+to your LAN unless you opt in (see Security).
+
 **Default model:** `huihui-ai/Huihui-Qwen3.5-2B-abliterated` — an
 abliterated (uncensored) Qwen3.5-2B, quantized to Q4_K_M (~1.3 GB) by
 [mradermacher](https://huggingface.co/mradermacher/Huihui-Qwen3.5-2B-abliterated-GGUF).
@@ -42,6 +45,19 @@ few minutes. Then open **http://localhost:3000** — no sign-up, no password.
 ./local-ai.sh stop            # tear everything down (models are kept)
 ./local-ai.sh update          # pull the latest container images
 ./local-ai.sh detect          # show the detection plan without changing anything
+```
+
+### Headless / CI
+
+Prompts never block automation: when stdin is not a terminal they auto-answer
+with their default (and print what they assumed), so `./local-ai.sh start
+</dev/null` completes without hanging. For explicit control use the `--yes`
+flag or `LOCALAI_YES=1`:
+
+```bash
+./local-ai.sh --yes start      # auto-confirm every install prompt
+LOCALAI_YES=1 ./local-ai.sh start
+yes | ./local-ai.sh start      # equivalent, pipe-style
 ```
 
 ## How it works
@@ -85,6 +101,20 @@ On every `start`, the script:
 - **Native Linux:** Docker must have the `nvidia` runtime. If it doesn't, the
   script offers to install `nvidia-container-toolkit` (official NVIDIA repo);
   decline and it falls back to CPU.
+- **Driver CUDA version:** the pinned `server-cuda` image is built on CUDA
+  12.8, so your driver must support CUDA ≥ 12.8. Check with:
+
+  ```bash
+  nvidia-smi --query-gpu=driver_version,cuda_version --format=csv,noheader
+  ```
+
+  The script checks this up front and fails fast with remedies — before any
+  model or image download — instead of pulling gigabytes and then dying.
+  Driver too old? Update it, or pin an older compatible image:
+
+  ```bash
+  LOCALAI_LLAMA_IMAGE_TAG=server-cuda-bXXXX ./local-ai.sh start
+  ```
 
 ### Apple Silicon
 
@@ -97,6 +127,27 @@ LOCALAI_OPENAI_BASE=http://host.docker.internal:18080/v1 ./local-ai.sh start
 ```
 
 (the compose file is otherwise identical).
+
+### Running on WSL2
+
+- **Memory:** WSL2 gives the distro only ~50% of Windows RAM by default. The
+  default model + context needs ~2-4 GB; the script warns when it detects less
+  than 5 GB (a memory-starved distro OOM-crash-loops llama-server instead of
+  failing cleanly). Raise the limit in `%UserProfile%\.wslconfig`:
+
+  ```ini
+  [wsl2]
+  memory=6GB
+  swap=2GB
+  ```
+
+  then run `wsl --shutdown`.
+- **Idle shutdown:** WSL2 can shut the VM down when idle, killing the stack.
+  Disable it with `vmIdleTimeout=-1` in the same `[wsl2]` section, or keep a
+  keepalive process running.
+- **NVIDIA:** works via WSL2 CUDA passthrough — install the NVIDIA driver on
+  Windows and `nvidia-smi` appears inside the distro; Docker Desktop handles
+  the rest.
 
 ## Configuration
 
@@ -118,6 +169,8 @@ directory (docker compose reads it automatically; exported env vars win).
 | `LOCALAI_OPENAI_BASE` | `http://llama-backend:18080/v1` | OpenAI-compatible base URL Open WebUI talks to (point at a native host server with `http://host.docker.internal:PORT/v1`) |
 | `LOCALAI_CTX_GPU` / `LOCALAI_CTX_CPU` | `16384` / `8192` | Context size per profile |
 | `LOCALAI_REASONING` | `off` | llama.cpp `--reasoning` mode. `off` = direct answers (default; the 2B model's thinking phase is very long); `on`/`auto` re-enables reasoning |
+| `LOCALAI_LLAMA_IMAGE_TAG` | *(pinned)* | Override the llama.cpp image tag for the NVIDIA profile (e.g. `server-cuda-b4726`) to match older drivers; bypasses the CUDA pre-flight |
+| `LOCALAI_YES` | `0` | Set `1` to auto-confirm every prompt (same as `--yes`) |
 | `LOCALAI_FORCE` | *(auto)* | `cpu` \| `nvidia` \| `vulkan` — skip detection |
 | `LOCALAI_API_KEY` | `local-ai` | Dummy key sent to llama.cpp (not a secret) |
 | `LOCALAI_STATE_DIR` | `~/.local/share/local-ai` | Script state (last profile) |
@@ -174,6 +227,9 @@ docker compose -f docker-compose.yaml -f docker-compose.vision.yaml --profile cp
   not expose a working device to the container — CPU is the safe fallback.
 - **Slow first start** — the script downloads the model and images on first
   boot; subsequent starts are fast.
+- **`503 "Loading model"` from llama-server** — normal for the first seconds
+  after start while the model loads; the healthcheck allows a 30 s start
+  period, and the webui simply shows the model as loading.
 - **Disk space** — model ~1.3 GB (Q4_K_M) + ~0.4 GB mmproj + container images
   (~4 GB). Keep ~6 GB free.
 - **WSL2 GPU** — you need NVIDIA drivers *on Windows* (they expose `nvidia-smi`

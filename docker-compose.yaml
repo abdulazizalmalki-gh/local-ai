@@ -60,7 +60,7 @@ services:
   llama-nvidia:
     <<: *llama-common
     profiles: ["nvidia"]
-    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    image: ghcr.io/ggml-org/llama.cpp:${LOCALAI_LLAMA_IMAGE_TAG:-server-cuda}
     gpus: all
     command:
       - --model

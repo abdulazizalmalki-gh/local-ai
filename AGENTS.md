@@ -47,20 +47,28 @@ project went fully container-based. `local-ai.sh` is the only entry point.
    `ensure_nvidia_runtime` verifies the Docker `nvidia` runtime exists and can
    offer to install `nvidia-container-toolkit` (official NVIDIA repo) on apt
    systems; declines degrade to CPU.
-5. **`ensure_model`** — curl-only download (no `hf` CLI, no `jq`): checks the
+5. **`check_cuda_driver`** (nvidia profile only) — reads the driver's CUDA
+   version (`nvidia-smi --query-gpu=driver_version,cuda_version`) and fails
+   fast with remedies when it's below `REQUIRED_CUDA` (constant at the top of
+   the script — bump it whenever the `server-cuda` image tag's CUDA base is
+   bumped; `LOCALAI_LLAMA_IMAGE_TAG` pins a tag and bypasses the check).
+   **`check_wsl_memory`** — on WSL2, warns when the distro has < 5 GB RAM
+   (OOM crash-loop risk) and prints the `.wslconfig` remedy.
+6. **`ensure_model`** — curl-only download (no `hf` CLI, no `jq`): checks the
    remote file exists (HTTP 200), compares `Content-Length` against the local
    file, resumes with `curl -C -` when partial, re-downloads on mismatch.
    Also fetches the mmproj projector.
-6. **Compose up** — exports `LOCALAI_MODEL_DIR`, `LOCALAI_MODEL_FILE`,
+7. **Compose up** — exports `LOCALAI_MODEL_DIR`, `LOCALAI_MODEL_FILE`,
    `LOCALAI_CTX` (16384 GPU / 8192 CPU), `LOCALAI_API_KEY`, then
    `docker compose -f docker-compose.yaml -f [docker-compose.vision.yaml] --profile <p> up -d`.
    Vision override is added only when the mmproj file exists on disk and
    `LOCALAI_MMPROJ != 0`. Last profile is recorded in
    `$LOCALAI_STATE_DIR/profile` (default `~/.local/share/local-ai/`).
-7. **`wait_for_llama`** — polls `http://127.0.0.1:$LLAMA_PORT/health` (up to
-   300 s), watching `docker inspect` state for `exited|dead|restarting`.
-   On failure with a GPU profile: tears down, restarts with `cpu`, waits again.
-   Only if CPU also fails does it dump logs and exit non-zero.
+8. **`wait_for_stack`** — waits for llama-server (`/health`, up to 300 s,
+   watching for `exited|dead|restarting`) **and** Open WebUI (its own
+   healthcheck, up to 240 s). A GPU-profile failure degrades to `cpu` and
+   retries; only a fully healthy stack prints the "running" banner — otherwise
+   `dump_logs` (tail of both containers) runs and the script exits non-zero.
 
 ## Conventions (keep these when editing)
 
@@ -89,11 +97,18 @@ project went fully container-based. `local-ai.sh` is the only entry point.
   `1`, `999`, and `on` must stay quoted (`"18080"`) or compose rejects them
   as ints/bools. Any new flag value that looks numeric or boolean must be
   quoted.
+- **All prompts go through `confirm()`.** Every interactive question routes
+  through the `confirm` helper: it honors `-y`/`--yes`/`LOCALAI_YES=1` and,
+  when stdin is not a TTY, auto-answers with the documented default and prints
+  what it assumed. Never add a bare `read -r -p` — automation must never
+  block. New prompts must pick a sensible default (install-style = `y`,
+  risky/optional = `n`).
 - **Sync `docker-compose.yaml` and `docker-compose.vision.yaml`.** The vision
   override references the exact service names (`llama-cpu`, `llama-nvidia`,
-  `llama-vulkan`) and the image's entrypoint `/app/llama-server`. Adding a
-  profile or changing service names without updating the override silently
-  breaks vision.
+  `llama-vulkan`) and the image's entrypoint `/app/llama-server`, and now also
+  passes `--image-min-tokens 1024` (Qwen-VL grounding fix). Adding a profile
+  or changing service names without updating the override silently breaks
+  vision.
 - **Shared server flags** (`--model`, `--host`, `--port`, `--ctx-size`,
   `--alias`, `--reasoning`, `--parallel`) appear in every profile and stay in
   sync; `--alias` (env `LOCALAI_MODEL_ALIAS`) is what the API/Open WebUI
@@ -106,7 +121,10 @@ project went fully container-based. `local-ai.sh` is the only entry point.
   answer, which is a terrible chat UX — `LOCALAI_REASONING=on` restores it.
 - **Container names are fixed** (`local-ai-llama-server`,
   `local-ai-open-webui`) so the script can `docker inspect` / stop them
-  regardless of profile.
+  regardless of profile. Consequence: switching profiles while a stack from a
+  different profile is running makes `up` hit a name conflict — cmd_start's
+  retry handles it with a full-project `down` (all three profiles) before
+  retrying.
 
 ## Verification checklist
 
@@ -115,23 +133,34 @@ Before claiming a change works:
 ```bash
 bash -n local-ai.sh                          # syntax
 ./local-ai.sh detect                         # detection path on this machine
+./local-ai.sh --yes detect                   # flag parsing works
+./local-ai.sh detect </dev/null              # non-interactive: no hang
 
-# compose validity for every profile (+ vision merge):
+# compose validity for every profile (+ vision merge + tag override):
 for p in cpu nvidia vulkan; do
   docker compose -f docker-compose.yaml --profile "$p" config --quiet
 done
 docker compose -f docker-compose.yaml -f docker-compose.vision.yaml --profile cpu config --quiet
+LOCALAI_LLAMA_IMAGE_TAG=server-cuda-b4726 docker compose -f docker-compose.yaml --profile nvidia config --quiet
+
+# version_ge sanity (the CUDA pre-flight comparator):
+version_ge() { awk -v a="$1" -v b="$2" 'BEGIN{gsub(/[^0-9.]/,"",a);gsub(/[^0-9.]/,"",b);na=split(a,aa,".");nb=split(b,bb,".");n=(na>nb?na:nb);for(i=1;i<=n;i++){va=(i<=na?aa[i]+0:0);vb=(i<=nb?bb[i]+0:0);if(va>vb)exit 0;if(va<vb)exit 1}exit 0}'; }
+version_ge 12.8 12.8 && echo "12.8>=12.8 ok"; version_ge 12.6 12.8 && echo "BAD" || echo "12.6<12.8 ok"; version_ge 13.0 12.8 && echo "13.0>=12.8 ok"
 
 # end-to-end (CPU machine: exercises the GPU→CPU fallback path):
 ./local-ai.sh start
 ./local-ai.sh status
 curl http://127.0.0.1:18080/health           # {"status":"ok",...}
 curl http://127.0.0.1:18080/v1/models        # expect name/model = "Qwen3.5-2B-Abliterated (Uncensored)"
+docker logs local-ai-llama-server 2>&1 | grep -c "image-min-tokens\|Qwen-VL"  # vision warning gone
 ./local-ai.sh lan on                         # webui on 0.0.0.0:3000 (llama stays 127.0.0.1)
 docker port local-ai-open-webui              # expect 0.0.0.0:3000
 ./local-ai.sh lan off                        # back to loopback
 ./local-ai.sh stop
 ```
+
+The exit code of `start` is the health verdict: 0 only when both containers
+came up healthy; any failure dumps logs and exits non-zero.
 
 Force-test individual profiles with `LOCALAI_FORCE=nvidia|vulkan|cpu`
 (`detect` prints the profile it would choose). On a machine with a working
@@ -149,7 +178,17 @@ already-installed happy path is safe to run.
 
 - macOS: `stat -f%z` (BSD) vs `stat -c%s` (GNU); `numfmt` missing → fallback.
 - WSL2: no `systemd` by default → `service docker start` fallback; `nvidia-smi`
-  present only when NVIDIA Windows drivers are installed.
+  present only when NVIDIA Windows drivers are installed. Distro RAM defaults
+  to ~50% of Windows RAM → `check_wsl_memory` warns below 5 GB
+  (OOM-crash-loops; remedy is `.wslconfig`).
+- **NVIDIA driver vs image CUDA mismatch**: `server-cuda` is built on CUDA
+  12.8.1 (cuda.Dockerfile `ARG CUDA_VERSION`); an older driver makes the
+  container die at start with `nvidia-container-cli: ... cuda>=12.8 ...`
+  AFTER gigabytes of downloads — hence `check_cuda_driver` failing fast, and
+  `LOCALAI_LLAMA_IMAGE_TAG` for pinning an older image.
+- Open WebUI's image ships its own healthcheck (`curl /health | jq`), which
+  `wait_for_webui` polls — the webui container takes 30-90 s to become
+  healthy on first boot.
 - Docker Desktop (macOS/WSL2) ships the `nvidia` runtime; native Linux often
   needs `nvidia-container-toolkit` — hence the prompt in
   `ensure_nvidia_runtime`.

@@ -29,6 +29,10 @@
 #     detect   print the hardware/docker detection plan (no changes)
 #     help     this message
 #
+#   Flags:
+#     -y, --yes   auto-confirm every prompt (equivalent: LOCALAI_YES=1).
+#                 When stdin is not a terminal, prompts auto-default anyway.
+#
 #   Configuration is read from environment variables or a .env file in
 #   this directory. See README.md for the full table.
 #
@@ -48,6 +52,10 @@ CTX_CPU="${LOCALAI_CTX_CPU:-8192}"
 API_KEY="${LOCALAI_API_KEY:-local-ai}"
 FORCE_PROFILE="${LOCALAI_FORCE:-}"          # cpu | nvidia | vulkan
 MMPROJ_ENABLED="${LOCALAI_MMPROJ:-1}"       # 1 = auto (on if file exists), 0 = off
+# CUDA version required by the pinned server-cuda image (cuda.Dockerfile's
+# ARG CUDA_VERSION). Bump this whenever the image tag's CUDA base is bumped.
+# LOCALAI_LLAMA_IMAGE_TAG overrides the tag and bypasses this check.
+REQUIRED_CUDA="${LOCALAI_REQUIRED_CUDA:-12.8}"
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMPOSE_FILE="$PROJECT_DIR/docker-compose.yaml"
@@ -66,6 +74,26 @@ info()  { echo -e "${GREEN}==>${NC} $*"; }
 warn()  { echo -e "${YELLOW}!! ${NC}$*" >&2; }
 error() { echo -e "${RED}ERROR:${NC} $*" >&2; }
 die()   { error "$*"; exit 1; }
+
+# Ask a yes/no question. $1 = prompt, $2 = default (y|n). Returns 0 = yes.
+# Never blocks: --yes/LOCALAI_YES=1 force the default; a non-TTY stdin also
+# auto-answers with the default and prints what it assumed.
+confirm() {
+  local prompt="$1" default="${2:-y}" ans
+  if [ "$YES_MODE" = "1" ]; then
+    [ "$default" = "y" ] && return 0 || return 1
+  fi
+  if [ ! -t 0 ]; then
+    echo "[non-interactive] $prompt -> assuming '$default'" >&2
+    [ "$default" = "y" ] && return 0 || return 1
+  fi
+  local hint; [ "$default" = "y" ] && hint="Y/n" || hint="y/N"
+  read -r -p "$prompt [$hint] " ans
+  case "${ans:-$default}" in
+    [Yy]*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
 
 # ---------------------------------------------------------------------------
 # Machine detection
@@ -120,20 +148,17 @@ wait_for_docker() {
 
 install_docker_linux() {
   if command -v apt-get >/dev/null 2>&1; then
-    read -r -p "Docker not found. Install it with apt (docker.io + compose plugin)? [Y/n] " ans
-    [[ "${ans:-y}" =~ ^[Yy]$ ]] || die "Aborted. Install Docker manually, then re-run."
+    confirm "Docker not found. Install it with apt (docker.io + compose plugin)?" y || die "Aborted. Install Docker manually, then re-run."
     run_sudo apt-get update -y
     run_sudo apt-get install -y docker.io
     run_sudo apt-get install -y docker-compose-v2 2>/dev/null \
       || run_sudo apt-get install -y docker-compose-plugin 2>/dev/null \
       || warn "Compose v2 plugin not found in apt. Install Docker Compose v2 manually."
   elif command -v dnf >/dev/null 2>&1; then
-    read -r -p "Docker not found. Install it with dnf (docker + compose plugin)? [Y/n] " ans
-    [[ "${ans:-y}" =~ ^[Yy]$ ]] || die "Aborted. Install Docker manually, then re-run."
+    confirm "Docker not found. Install it with dnf (docker + compose plugin)?" y || die "Aborted. Install Docker manually, then re-run."
     run_sudo dnf install -y docker docker-compose-plugin
   elif command -v pacman >/dev/null 2>&1; then
-    read -r -p "Docker not found. Install it with pacman (docker + compose)? [Y/n] " ans
-    [[ "${ans:-y}" =~ ^[Yy]$ ]] || die "Aborted. Install Docker manually, then re-run."
+    confirm "Docker not found. Install it with pacman (docker + compose)?" y || die "Aborted. Install Docker manually, then re-run."
     run_sudo pacman -S --noconfirm docker docker-compose
   else
     die "Unsupported package manager. Install Docker yourself (see README), then re-run."
@@ -152,8 +177,7 @@ install_docker_linux() {
 install_docker_macos() {
   command -v brew >/dev/null 2>&1 \
     || die "Homebrew is required to install Docker on macOS: https://brew.sh"
-  read -r -p "Docker not found. Install Docker Desktop via Homebrew? [Y/n] " ans
-  [[ "${ans:-y}" =~ ^[Yy]$ ]] || die "Aborted. Install Docker Desktop manually, then re-run."
+  confirm "Docker not found. Install Docker Desktop via Homebrew?" y || die "Aborted. Install Docker Desktop manually, then re-run."
   brew install --cask docker
   open -a Docker
   info "Waiting for Docker Desktop to start..."
@@ -205,38 +229,25 @@ ensure_compose() {
 
   if is_macos; then
     if command -v brew >/dev/null 2>&1; then
-      read -r -p "Install docker-compose via Homebrew? [Y/n] " ans
-      if [[ "${ans:-y}" =~ ^[Yy]$ ]]; then
-        brew install docker-compose && installed=1
-      fi
+      confirm "Install docker-compose via Homebrew?" y && brew install docker-compose && installed=1
     else
       warn "Docker Desktop bundles Compose v2; Homebrew is required for a standalone install."
     fi
   elif command -v apt-get >/dev/null 2>&1; then
-    read -r -p "Install the Docker Compose plugin via apt? [Y/n] " ans
-    if [[ "${ans:-y}" =~ ^[Yy]$ ]]; then
+    if confirm "Install the Docker Compose plugin via apt?" y; then
       run_sudo apt-get install -y docker-compose-v2 2>/dev/null \
         || run_sudo apt-get install -y docker-compose-plugin 2>/dev/null \
         || true
       "${DOCKER_CMD[@]}" compose version >/dev/null 2>&1 && installed=1
     fi
   elif command -v dnf >/dev/null 2>&1; then
-    read -r -p "Install the Docker Compose plugin via dnf? [Y/n] " ans
-    if [[ "${ans:-y}" =~ ^[Yy]$ ]]; then
-      run_sudo dnf install -y docker-compose-plugin && installed=1
-    fi
+    confirm "Install the Docker Compose plugin via dnf?" y && run_sudo dnf install -y docker-compose-plugin && installed=1
   elif command -v pacman >/dev/null 2>&1; then
-    read -r -p "Install docker-compose via pacman? [Y/n] " ans
-    if [[ "${ans:-y}" =~ ^[Yy]$ ]]; then
-      run_sudo pacman -S --noconfirm docker-compose && installed=1
-    fi
+    confirm "Install docker-compose via pacman?" y && run_sudo pacman -S --noconfirm docker-compose && installed=1
   fi
 
   if [ "$installed" != 1 ]; then
-    read -r -p "Download the official docker compose binary from GitHub? [Y/n] " ans
-    if [[ "${ans:-y}" =~ ^[Yy]$ ]]; then
-      install_compose_binary && installed=1
-    fi
+    confirm "Download the official docker compose binary from GitHub?" y && install_compose_binary && installed=1
   fi
 
   [ "$installed" = 1 ] \
@@ -291,8 +302,7 @@ ensure_nvidia_runtime() {
     return 0
   fi
   if is_linux && command -v apt-get >/dev/null 2>&1; then
-    read -r -p "NVIDIA GPU found, but Docker cannot use it yet. Install nvidia-container-toolkit? [y/N] " ans
-    if [[ "${ans:-n}" =~ ^[Yy]$ ]]; then
+    if confirm "NVIDIA GPU found, but Docker cannot use it yet. Install nvidia-container-toolkit?" n; then
       info "Installing nvidia-container-toolkit (official NVIDIA repo)..."
       curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
         | run_sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg 2>/dev/null
@@ -313,6 +323,70 @@ ensure_nvidia_runtime() {
     warn "Falling back to the CPU profile."
   fi
   return 1
+}
+
+# Numeric dotted compare (portable awk): $1 >= $2
+version_ge() {
+  awk -v a="$1" -v b="$2" 'BEGIN{
+    gsub(/[^0-9.]/,"",a); gsub(/[^0-9.]/,"",b);
+    na=split(a,aa,"."); nb=split(b,bb,".");
+    n=(na>nb?na:nb);
+    for(i=1;i<=n;i++){
+      va=(i<=na?aa[i]+0:0); vb=(i<=nb?bb[i]+0:0);
+      if(va>vb) exit 0
+      if(va<vb) exit 1
+    }
+    exit 0
+  }'
+}
+
+# Fail fast — before any model download or image pull — when the NVIDIA
+# driver is too old for the pinned server-cuda image. Skipped when the user
+# pinned an image tag themselves (LOCALAI_LLAMA_IMAGE_TAG).
+check_cuda_driver() {
+  [ -n "${LOCALAI_LLAMA_IMAGE_TAG:-}" ] && return 0
+  command -v nvidia-smi >/dev/null 2>&1 \
+    || { warn "nvidia-smi not found; skipping the CUDA pre-flight check."; return 0; }
+  local line driver cuda
+  line="$(nvidia-smi --query-gpu=driver_version,cuda_version --format=csv,noheader 2>/dev/null | head -1)"
+  driver="${line%%,*}"; cuda="${line##*,}"
+  if [ -z "$cuda" ]; then
+    warn "Could not read the CUDA version from nvidia-smi; skipping the pre-flight check."
+    return 0
+  fi
+  if version_ge "$cuda" "$REQUIRED_CUDA"; then
+    info "CUDA driver OK (CUDA $cuda >= required $REQUIRED_CUDA)."
+    return 0
+  fi
+  error "NVIDIA driver too old for the pinned llama.cpp CUDA image."
+  echo "    Required: CUDA >= $REQUIRED_CUDA  (ghcr.io/ggml-org/llama.cpp:server-cuda)"
+  echo "    You have: CUDA $cuda  (driver $driver)"
+  echo "    Remedies:"
+  echo "      - update your NVIDIA driver to one supporting CUDA $REQUIRED_CUDA or newer, or"
+  echo "      - pin an older compatible image:  LOCALAI_LLAMA_IMAGE_TAG=server-cuda-bXXXX ./local-ai.sh start"
+  echo "      - or run on CPU:                  LOCALAI_FORCE=cpu ./local-ai.sh start"
+  return 1
+}
+
+# WSL2 gives the distro ~50% of Windows RAM by default; a memory-starved
+# distro OOM-crash-loops llama-server instead of failing cleanly.
+check_wsl_memory() {
+  [ "$WSL" = 1 ] || return 0
+  local total_mb
+  total_mb="$(free -m 2>/dev/null | awk '/^Mem:/{print $2}')"
+  [ -n "$total_mb" ] || return 0
+  local total_g=$((total_mb / 1024))
+  if [ "$total_mb" -lt 5120 ]; then
+    warn "WSL2 has only ${total_g} GB of RAM for this distro (default: ~50% of Windows RAM)."
+    warn "The default model + context needs ~2-4 GB; OOM-crash-loops are likely."
+    warn "Raise the limit in %UserProfile%\\.wslconfig:"
+    warn "  [wsl2]"
+    warn "  memory=6GB"
+    warn "  swap=2GB"
+    warn "then run: wsl --shutdown"
+  else
+    info "WSL2 memory: ${total_g} GB available."
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -396,6 +470,42 @@ wait_for_llama() { # $1 = profile (for messaging), returns 0 healthy / 1 failed 
   return 2
 }
 
+# Open WebUI ships its own healthcheck; poll it the same way.
+wait_for_webui() {
+  local deadline=$((SECONDS + 240))
+  local hs st
+  info "Waiting for Open WebUI to become healthy..."
+  while [ $SECONDS -lt $deadline ]; do
+    hs="$("${DOCKER_CMD[@]}" inspect -f '{{.State.Health.Status}}' local-ai-open-webui 2>/dev/null || echo missing)"
+    if [ "$hs" = "healthy" ]; then
+      info "Open WebUI is healthy."
+      return 0
+    fi
+    st="$("${DOCKER_CMD[@]}" inspect -f '{{.State.Status}}' local-ai-open-webui 2>/dev/null || echo missing)"
+    if [ "$st" = "exited" ] || [ "$st" = "dead" ] || [ "$st" = "restarting" ]; then
+      sleep 8   # don't misjudge a transient restart
+      st="$("${DOCKER_CMD[@]}" inspect -f '{{.State.Status}}' local-ai-open-webui 2>/dev/null || echo missing)"
+      if [ "$st" = "exited" ] || [ "$st" = "dead" ] || [ "$st" = "restarting" ]; then
+        warn "open-webui container is $st."
+        return 1
+      fi
+    fi
+    sleep 5
+  done
+  return 2
+}
+
+# The whole stack must be healthy, or the run is a failure (non-zero exit).
+wait_for_stack() { # $1 = profile (for messaging)
+  wait_for_llama "$1" || return 1
+  wait_for_webui || return 1
+}
+
+dump_logs() {
+  "${DOCKER_CMD[@]}" compose -f "$COMPOSE_FILE" --profile cpu logs --tail=50 local-ai-llama-server 2>/dev/null || true
+  "${DOCKER_CMD[@]}" compose -f "$COMPOSE_FILE" --profile cpu logs --tail=50 local-ai-open-webui 2>/dev/null || true
+}
+
 # ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
@@ -406,6 +516,10 @@ cmd_start() {
   profile="$(detect_profile)"
   info "Detected: OS=$OS arch=$ARCH wsl=$WSL -> profile '$profile'"
   if [ "$profile" = "nvidia" ] && ! ensure_nvidia_runtime; then profile="cpu"; fi
+  if [ "$profile" = "nvidia" ] && ! check_cuda_driver; then
+    die "CUDA driver pre-flight failed — see the messages above."
+  fi
+  check_wsl_memory
 
   ensure_model
 
@@ -425,18 +539,35 @@ cmd_start() {
   [ "$vision" = 1 ] && compose_args+=(-f "$VISION_COMPOSE_FILE")
 
   info "Starting llama.cpp ($profile profile) + Open WebUI..."
-  "${DOCKER_CMD[@]}" compose "${compose_args[@]}" up -d
+  local up_out
+  if ! up_out="$("${DOCKER_CMD[@]}" compose "${compose_args[@]}" up -d 2>&1)"; then
+    # Stale containers from an older compose config can block recreation with
+    # a name conflict (e.g. upgrading the script while the stack is running).
+    # Reset the project and retry once.
+    if grep -q "already in use" <<<"$up_out"; then
+      warn "Container name conflict from a previous run (profile changed?) — resetting the project and retrying."
+      # container_name is fixed across profiles, so a stale container created
+      # under a different profile must be removed with a full-project down.
+      "${DOCKER_CMD[@]}" compose -f "$COMPOSE_FILE" \
+        --profile cpu --profile nvidia --profile vulkan down --remove-orphans 2>/dev/null || true
+      "${DOCKER_CMD[@]}" compose "${compose_args[@]}" up -d
+    else
+      echo "$up_out" >&2
+      die "docker compose up failed."
+    fi
+  fi
 
   mkdir -p "$STATE_DIR"
   echo "$profile" > "$STATE_DIR/profile"
   echo "$vision" > "$STATE_DIR/vision"
 
   # If a GPU profile fails to come up — or comes up but llama.cpp finds no
-  # usable GPU inside the container — degrade gracefully to CPU.
-  if ! wait_for_llama "$profile"; then
+  # usable GPU inside the container — degrade gracefully to CPU. Either way
+  # the final state must be fully healthy or the script exits non-zero.
+  if ! wait_for_stack "$profile"; then
     if [ "$profile" = "cpu" ]; then
-      "${DOCKER_CMD[@]}" compose -f "$COMPOSE_FILE" --profile cpu logs --tail=50 local-ai-llama-server
-      die "llama-server failed to start. See logs above."
+      dump_logs
+      die "The stack failed to become healthy. See logs above."
     fi
     warn "The '$profile' profile failed. Falling back to the CPU profile..."
     fallback_to_cpu "$profile"
@@ -471,9 +602,9 @@ fallback_to_cpu() { # $1 = the failed profile
   [ "$vision" = 1 ] && compose_args+=(-f "$VISION_COMPOSE_FILE")
   "${DOCKER_CMD[@]}" compose "${compose_args[@]}" up -d
   echo cpu > "$STATE_DIR/profile"; echo "$vision" > "$STATE_DIR/vision"
-  if ! wait_for_llama cpu; then
-    "${DOCKER_CMD[@]}" compose -f "$COMPOSE_FILE" --profile cpu logs --tail=50 local-ai-llama-server
-    die "llama-server failed to start even on CPU. See logs above."
+  if ! wait_for_stack cpu; then
+    dump_logs
+    die "The stack failed to become healthy even on CPU. See logs above."
   fi
 }
 
@@ -527,6 +658,7 @@ cmd_detect() {
   echo "Arch      : $ARCH"
   echo "WSL2      : $([ $WSL = 1 ] && echo yes || echo no)"
   echo "CPU cores : $(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo '?')"
+  [ "$WSL" = 1 ] && echo "Memory    : $(free -m 2>/dev/null | awk '/^Mem:/{printf "%d MB", $2}' || echo '?')"
   if command -v docker >/dev/null 2>&1; then
     echo "Docker    : $(docker --version 2>/dev/null || echo 'installed (needs sudo)')"
     docker_ok && echo "Daemon    : running" || echo "Daemon    : NOT running"
@@ -612,13 +744,24 @@ print_urls() {
 }
 
 usage() {
-  sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '2,35p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
-CMD="${1:-start}"
+# Global flags (-y/--yes) may appear anywhere on the command line.
+YES_MODE=0
+ARGS=()
+for _arg in "$@"; do
+  case "$_arg" in
+    -y|--yes) YES_MODE=1 ;;
+    *) ARGS+=("$_arg") ;;
+  esac
+done
+[ "${LOCALAI_YES:-0}" = "1" ] && YES_MODE=1
+
+CMD="${ARGS[0]:-start}"
 case "$CMD" in
   start|up)            cmd_start ;;
   stop|down)           cmd_stop ;;
@@ -626,7 +769,7 @@ case "$CMD" in
   status|ps)           cmd_status ;;
   logs)                cmd_logs ;;
   update)              cmd_update ;;
-  lan)                 cmd_lan "${2:-}" ;;
+  lan)                 cmd_lan "${ARGS[1]:-}" ;;
   detect|doctor|info)  cmd_detect ;;
   help|-h|--help)      usage ;;
   *)                   usage; exit 1 ;;

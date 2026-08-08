@@ -18,15 +18,21 @@ services:
       - /app/llama-server
       - --mmproj
       - /models/${LOCALAI_MMPROJ_FILE:-Huihui-Qwen3.5-2B-abliterated.mmproj-Q8_0.gguf}
+      - --image-min-tokens
+      - "1024"
 
   llama-nvidia:
     entrypoint:
       - /app/llama-server
       - --mmproj
       - /models/${LOCALAI_MMPROJ_FILE:-Huihui-Qwen3.5-2B-abliterated.mmproj-Q8_0.gguf}
+      - --image-min-tokens
+      - "1024"
 
   llama-vulkan:
     entrypoint:
       - /app/llama-server
       - --mmproj
       - /models/${LOCALAI_MMPROJ_FILE:-Huihui-Qwen3.5-2B-abliterated.mmproj-Q8_0.gguf}
+      - --image-min-tokens
+      - "1024"

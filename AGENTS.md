@@ -9,7 +9,9 @@ server (`llama-server`) plus a userless Open WebUI chat UI. The core idea is
 **machine agnosticism** — the same `./local-ai.sh` bootstraps itself on Linux,
 Windows (WSL2), and macOS, discovers Docker (installing it if needed) and the
 GPU, and picks the best llama.cpp container image and flags for the hardware it
-finds. GPU failures degrade to CPU automatically.
+finds. GPU failures degrade to CPU automatically. On Apple Silicon macOS the
+inference backend is **MLX** (mlx-lm, native on the host, Metal-accelerated)
+instead of Docker, because containers cannot reach the Metal GPU.
 
 The default model is `mradermacher/Huihui-Qwen3.5-2B-abliterated-GGUF`
 (abliterated Qwen3.5-2B, Q4_K_M + optional mmproj vision projector).
@@ -31,23 +33,29 @@ project went fully container-based. `local-ai.sh` is the only entry point.
 ## Architecture & boot flow (`local-ai.sh start`)
 
 1. **Detect** — `OS` (Linux/Darwin), WSL2 flag (`/proc/version` grep), arch.
-2. **`ensure_docker`** — if the `docker` binary is missing: `apt`/`dnf`/`pacman`
+2. **`detect_backend`** — `mlx` when `LOCALAI_BACKEND=mlx`, or `auto` on
+   macOS arm64; otherwise `docker`. The MLX path (`mlx_start`) runs mlx-lm
+   natively on the host (Metal) and starts Open WebUI via the dedicated
+   `webui` compose profile; the docker path below handles everything else.
+   `ensure_mlx_env` dies with a clear message if MLX is forced on a
+   non-Apple-Silicon machine.
+3. **`ensure_docker`** — if the `docker` binary is missing: `apt`/`dnf`/`pacman`
    on Linux, Homebrew cask on macOS (prompts first). Starts the daemon
    (`systemctl` → `service` fallback). If the user lacks docker-group
    permissions, `DOCKER_CMD` becomes `sudo docker` for the whole run.
-3. **`ensure_compose`** (inside `ensure_docker`) — if `docker compose` (v2) is
+4. **`ensure_compose`** (inside `ensure_docker`) — if `docker compose` (v2) is
    missing, installs it the same way Docker itself is installed: package
    manager (`apt` docker-compose-v2/plugin, `dnf` docker-compose-plugin,
    `pacman` docker-compose, Homebrew formula), then the official static binary
    from github.com/docker/compose releases into the docker CLI plugins dir as
    the cross-distro fallback (`install_compose_binary`). Dies with manual
    instructions only if the user declines every install option.
-4. **`detect_profile`** — `nvidia-smi -L` → `nvidia`; `/dev/dri` or `/dev/kfd`
+5. **`detect_profile`** — `nvidia-smi -L` → `nvidia`; `/dev/dri` or `/dev/kfd`
    → `vulkan`; else `cpu`. `LOCALAI_FORCE` overrides.
    `ensure_nvidia_runtime` verifies the Docker `nvidia` runtime exists and can
    offer to install `nvidia-container-toolkit` (official NVIDIA repo) on apt
    systems; declines degrade to CPU.
-5. **`check_cuda_driver`** (nvidia profile only) — parses the CUDA version
+6. **`check_cuda_driver`** (nvidia profile only) — parses the CUDA version
    from the `nvidia-smi` header (`CUDA (UMD )?Version:` regex — bare-metal
    says "CUDA Version:", WSL2 says "CUDA UMD Version:";
    `--query-gpu=cuda_version` does NOT exist, never use it) and fails fast
@@ -56,17 +64,17 @@ project went fully container-based. `local-ai.sh` is the only entry point.
    bumped; `LOCALAI_LLAMA_IMAGE_TAG` pins a tag and bypasses the check).
    **`check_wsl_memory`** — on WSL2, warns when the distro has < 5 GB RAM
    (OOM crash-loop risk) and prints the `.wslconfig` remedy.
-6. **`ensure_model`** — curl-only download (no `hf` CLI, no `jq`): checks the
+7. **`ensure_model`** — curl-only download (no `hf` CLI, no `jq`): checks the
    remote file exists (HTTP 200), compares `Content-Length` against the local
    file, resumes with `curl -C -` when partial, re-downloads on mismatch.
    Also fetches the mmproj projector.
-7. **Compose up** — exports `LOCALAI_MODEL_DIR`, `LOCALAI_MODEL_FILE`,
+8. **Compose up** — exports `LOCALAI_MODEL_DIR`, `LOCALAI_MODEL_FILE`,
    `LOCALAI_CTX` (16384 GPU / 8192 CPU), `LOCALAI_API_KEY`, then
    `docker compose -f docker-compose.yaml -f [docker-compose.vision.yaml] --profile <p> up -d`.
    Vision override is added only when the mmproj file exists on disk and
    `LOCALAI_MMPROJ != 0`. Last profile is recorded in
    `$LOCALAI_STATE_DIR/profile` (default `~/.local/share/local-ai/`).
-8. **`wait_for_stack`** — waits for llama-server (`/health`, up to 300 s,
+9. **`wait_for_stack`** — waits for llama-server (`/health`, up to 300 s,
    watching for `exited|dead|restarting`) **and** Open WebUI (its own
    healthcheck, up to 240 s). A GPU-profile failure degrades to `cpu` and
    retries; only a fully healthy stack prints the "running" banner — otherwise
@@ -127,6 +135,15 @@ project went fully container-based. `local-ai.sh` is the only entry point.
   different profile is running makes `up` hit a name conflict — cmd_start's
   retry handles it with a full-project `down` (all three profiles) before
   retrying.
+- **The MLX backend is a host process, not a container.** `mlx_start`
+  daemonizes `mlx_lm.server` with `nohup` + a PID file in `$STATE_DIR`
+  (`mlx-server.pid` / `mlx-server.log`), downloads the MLX model via
+  `huggingface_hub.snapshot_download` into `$MODEL_DIR/mlx/`, and starts Open
+  WebUI with the `webui`-only compose profile pointed at
+  `http://host.docker.internal:$LLAMA_PORT/v1`. Thinking is disabled by
+  default via `--chat-template-kwargs '{"enable_thinking": false}'`
+  (`LOCALAI_MLX_REASONING=on` restores it). No mmproj/vision on this path —
+  MLX quants are text-only.
 
 ## Verification checklist
 
@@ -194,8 +211,12 @@ already-installed happy path is safe to run.
 - Docker Desktop (macOS/WSL2) ships the `nvidia` runtime; native Linux often
   needs `nvidia-container-toolkit` — hence the prompt in
   `ensure_nvidia_runtime`.
-- Apple Silicon: containers cannot reach Metal; the arm64 CPU build is the
-  ceiling for the containerized path. Documented, not "fixed".
+- Apple Silicon: containers cannot reach Metal, so the MLX backend runs
+  mlx-lm natively on the host (`mlx_start`); Intel Macs stay on the Docker CPU
+  path. **The mlx Linux x86_64 wheel is currently broken** (missing
+  `libmlx.so` — verified), so the MLX runtime cannot be smoke-tested off a
+  real Mac; verify CLI flags against `mlx_lm/server.py` source instead and
+  test the venv/model-download/backend-dispatch logic on any box.
 - **`group_add: [video, render]` is forbidden** — hosts without a `render`
   group (verified in the wild) fail container start with "unable to find group
   render". The llama.cpp images run as root, so group_add is unnecessary;

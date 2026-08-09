@@ -2,3 +2,11 @@
 # Managed by: ./local-ai.sh lan on|off
 # See README.md -> Configuration for all available variables.
 .env
+
+# Python venv artifacts (defensive — the MLX venv lives in ~/.local/share/local-ai,
+# never in the repo)
+bin/
+include/
+lib/
+lib64
+pyvenv.cfg

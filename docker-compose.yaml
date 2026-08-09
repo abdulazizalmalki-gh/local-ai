@@ -121,7 +121,7 @@ services:
   open-webui:
     image: ghcr.io/open-webui/open-webui:latest
     container_name: local-ai-open-webui
-    profiles: ["cpu", "nvidia", "vulkan"]
+    profiles: ["cpu", "nvidia", "vulkan", "webui"]
     volumes:
       - local-ai-webui-data:/app/backend/data
     ports:

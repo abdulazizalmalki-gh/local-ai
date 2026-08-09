@@ -13,6 +13,9 @@
 #
 #   If Docker is missing it installs it (apt / dnf / pacman / brew).
 #   If a GPU profile fails at runtime it falls back to CPU automatically.
+#   On Apple Silicon macOS it uses the native MLX backend (Metal) for max
+#   performance instead of the Docker CPU container (LOCALAI_BACKEND=docker
+#   forces the containerized path; Intel Macs always use Docker).
 #
 #   Usage:
 #     ./local-ai.sh [command]
@@ -61,6 +64,15 @@ PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMPOSE_FILE="$PROJECT_DIR/docker-compose.yaml"
 VISION_COMPOSE_FILE="$PROJECT_DIR/docker-compose.vision.yaml"
 STATE_DIR="${LOCALAI_STATE_DIR:-$HOME/.local/share/local-ai}"
+
+# --- MLX backend (Apple Silicon) ---
+BACKEND="${LOCALAI_BACKEND:-auto}"            # auto | mlx | docker
+MLX_MODEL="${LOCALAI_MLX_MODEL:-Giniiki/Huihui-Qwen3.5-2B-abliterated-mlx-4bit}"
+MLX_REASONING="${LOCALAI_MLX_REASONING:-off}" # off = disable thinking (enable_thinking=false)
+MLX_VENV_DIR="${LOCALAI_MLX_VENV:-$STATE_DIR/mlx-venv}"
+MLX_LOG="$STATE_DIR/mlx-server.log"
+MLX_PID_FILE="$STATE_DIR/mlx-server.pid"
+MLX_MODEL_PATH=""
 
 # ---------------------------------------------------------------------------
 # Output helpers
@@ -395,6 +407,108 @@ check_wsl_memory() {
 }
 
 # ---------------------------------------------------------------------------
+# MLX backend (Apple Silicon only)
+# ---------------------------------------------------------------------------
+# Docker containers cannot reach the Metal GPU on macOS, so on Apple Silicon
+# the script runs mlx-lm natively on the host (Metal via MLX) and keeps Open
+# WebUI in Docker, pointed at the host server via host.docker.internal.
+detect_backend() {
+  if [ "$BACKEND" = "mlx" ] \
+    || { [ "$BACKEND" = "auto" ] && is_macos && [ "$ARCH" = "arm64" ]; }; then
+    echo "mlx"
+  else
+    echo "docker"
+  fi
+}
+
+ensure_mlx_env() {
+  if ! is_macos || [ "$ARCH" != "arm64" ]; then
+    die "The MLX backend requires Apple Silicon (macOS arm64). Use LOCALAI_BACKEND=docker here, or run on an M-series Mac."
+  fi
+  command -v python3 >/dev/null 2>&1 \
+    || die "python3 is required for the MLX backend (install via Homebrew or Xcode CLT)."
+  if [ ! -x "$MLX_VENV_DIR/bin/mlx_lm.server" ]; then
+    confirm "MLX backend needs a Python venv with mlx-lm (pip install mlx-lm). Set it up?" y \
+      || die "Aborted. Set up mlx-lm manually, then re-run."
+    info "Creating MLX venv at $MLX_VENV_DIR ..."
+    python3 -m venv "$MLX_VENV_DIR"
+    "$MLX_VENV_DIR/bin/pip" install -q --upgrade pip
+    "$MLX_VENV_DIR/bin/pip" install -q mlx mlx-lm || die "pip install mlx-lm failed."
+  fi
+}
+
+ensure_mlx_model() {
+  # LOCALAI_MLX_MODEL may already be a local directory
+  if [ -d "$MLX_MODEL" ]; then
+    MLX_MODEL_PATH="$MLX_MODEL"
+    return 0
+  fi
+  local dir_name="${MLX_MODEL##*/}"
+  MLX_MODEL_PATH="$MODEL_DIR/mlx/$dir_name"
+  if [ -f "$MLX_MODEL_PATH/config.json" ] && [ -f "$MLX_MODEL_PATH/model.safetensors.index.json" ]; then
+    info "MLX model already present ($MLX_MODEL_PATH)."
+    return 0
+  fi
+  info "Downloading MLX model '$MLX_MODEL' to $MLX_MODEL_PATH ..."
+  mkdir -p "$MODEL_DIR/mlx"
+  "$MLX_VENV_DIR/bin/python" - "$MLX_MODEL" "$MLX_MODEL_PATH" <<'PYEOF'
+import sys
+import huggingface_hub
+huggingface_hub.snapshot_download(repo_id=sys.argv[1], local_dir=sys.argv[2])
+PYEOF
+  info "MLX model downloaded."
+}
+
+mlx_start() {
+  ensure_docker          # Open WebUI still runs in Docker
+  ensure_mlx_env
+  ensure_mlx_model
+
+  if [ -f "$MLX_PID_FILE" ] && kill -0 "$(cat "$MLX_PID_FILE")" 2>/dev/null; then
+    warn "MLX server already running (PID $(cat "$MLX_PID_FILE"))."
+  else
+    info "Starting MLX server (Metal) with $MLX_MODEL on 127.0.0.1:$LLAMA_PORT ..."
+    local kwargs="" args
+    [ "$MLX_REASONING" = "off" ] && kwargs='{"enable_thinking": false}'
+    args=("$MLX_VENV_DIR/bin/mlx_lm.server" --model "$MLX_MODEL_PATH" \
+          --host 127.0.0.1 --port "$LLAMA_PORT")
+    [ -n "$kwargs" ] && args+=(--chat-template-kwargs "$kwargs")
+    nohup "${args[@]}" >"$MLX_LOG" 2>&1 &
+    echo $! > "$MLX_PID_FILE"
+  fi
+  if ! wait_for_llama mlx; then
+    tail -30 "$MLX_LOG" >&2 2>/dev/null || true
+    die "MLX server failed to start. See $MLX_LOG"
+  fi
+
+  mkdir -p "$STATE_DIR"
+  echo mlx > "$STATE_DIR/backend"
+  echo webui > "$STATE_DIR/profile"
+  echo 0 > "$STATE_DIR/vision"
+
+  info "Starting Open WebUI (Docker) linked to the native MLX server..."
+  export LOCALAI_OPENAI_BASE="http://host.docker.internal:$LLAMA_PORT/v1"
+  export LOCALAI_MODEL_DIR LOCALAI_MODEL_FILE LOCALAI_API_KEY
+  if ! "${DOCKER_CMD[@]}" compose -f "$COMPOSE_FILE" --profile webui up -d; then
+    "${DOCKER_CMD[@]}" compose -f "$COMPOSE_FILE" --profile webui logs --tail=50 local-ai-open-webui 2>/dev/null || true
+    die "Open WebUI failed to start."
+  fi
+  wait_for_webui || { dump_logs; die "Open WebUI failed to become healthy."; }
+  print_urls
+}
+
+mlx_stop() {
+  ensure_docker
+  if [ -f "$MLX_PID_FILE" ] && kill -0 "$(cat "$MLX_PID_FILE")" 2>/dev/null; then
+    kill "$(cat "$MLX_PID_FILE")" 2>/dev/null || true
+    info "MLX server stopped."
+  fi
+  rm -f "$MLX_PID_FILE"
+  "${DOCKER_CMD[@]}" compose -f "$COMPOSE_FILE" --profile webui down 2>/dev/null || true
+  info "Stopped. Model files in $MODEL_DIR are kept."
+}
+
+# ---------------------------------------------------------------------------
 # Model management (curl-only, resumable, size-verified)
 # ---------------------------------------------------------------------------
 http_code() { curl -sL -o /dev/null -w '%{http_code}' --max-time 30 "$1"; }
@@ -517,6 +631,13 @@ dump_logs() {
 cmd_start() {
   ensure_docker
 
+  local backend; backend="$(detect_backend)"
+  if [ "$backend" = "mlx" ]; then
+    info "Detected: OS=$OS arch=$ARCH -> MLX backend (Apple Silicon, Metal)."
+    mlx_start
+    return 0
+  fi
+
   local profile
   profile="$(detect_profile)"
   info "Detected: OS=$OS arch=$ARCH wsl=$WSL -> profile '$profile'"
@@ -615,6 +736,11 @@ fallback_to_cpu() { # $1 = the failed profile
 
 cmd_stop() {
   ensure_docker
+  local backend; backend="$(cat "$STATE_DIR/backend" 2>/dev/null || detect_backend)"
+  if [ "$backend" = "mlx" ]; then
+    mlx_stop
+    return 0
+  fi
   info "Stopping all local-ai containers..."
   "${DOCKER_CMD[@]}" compose -f "$COMPOSE_FILE" \
     --profile cpu --profile nvidia --profile vulkan down 2>/dev/null || true
@@ -625,10 +751,18 @@ cmd_restart() { cmd_stop; cmd_start; }
 
 cmd_status() {
   ensure_docker
+  local backend; backend="$(cat "$STATE_DIR/backend" 2>/dev/null || detect_backend)"
   local profile="?" vision="?"
   [ -f "$STATE_DIR/profile" ] && profile="$(cat "$STATE_DIR/profile")"
   [ -f "$STATE_DIR/vision" ] && vision="$(cat "$STATE_DIR/vision")"
-  info "Last used profile: $profile  |  vision: $([ "$vision" = 1 ] && echo on || echo off)"
+  info "Backend: $backend | Last profile: $profile | vision: $([ "$vision" = 1 ] && echo on || echo off)"
+  if [ "$backend" = "mlx" ]; then
+    if [ -f "$MLX_PID_FILE" ] && kill -0 "$(cat "$MLX_PID_FILE")" 2>/dev/null; then
+      echo "  MLX server   : running (PID $(cat "$MLX_PID_FILE"), log $MLX_LOG)"
+    else
+      echo "  MLX server   : not running"
+    fi
+  fi
 
   "${DOCKER_CMD[@]}" compose -f "$COMPOSE_FILE" \
     --profile cpu --profile nvidia --profile vulkan ps 2>/dev/null \
@@ -644,6 +778,14 @@ cmd_status() {
 
 cmd_logs() {
   ensure_docker
+  local backend; backend="$(cat "$STATE_DIR/backend" 2>/dev/null || detect_backend)"
+  if [ "$backend" = "mlx" ]; then
+    tail -f "$MLX_LOG" &
+    local tail_pid=$!
+    "${DOCKER_CMD[@]}" compose -f "$COMPOSE_FILE" --profile webui logs -f --tail=100 2>/dev/null || true
+    kill "$tail_pid" 2>/dev/null || true
+    return 0
+  fi
   "${DOCKER_CMD[@]}" compose -f "$COMPOSE_FILE" \
     --profile cpu --profile nvidia --profile vulkan logs -f --tail=100 2>/dev/null \
     || "${DOCKER_CMD[@]}" logs -f --tail=100 local-ai-llama-server local-ai-open-webui
@@ -651,6 +793,14 @@ cmd_logs() {
 
 cmd_update() {
   ensure_docker
+  local backend; backend="$(cat "$STATE_DIR/backend" 2>/dev/null || detect_backend)"
+  if [ "$backend" = "mlx" ]; then
+    info "Updating mlx-lm in $MLX_VENV_DIR ..."
+    "$MLX_VENV_DIR/bin/pip" install -q -U mlx-lm 2>/dev/null && info "mlx-lm updated."
+    ensure_mlx_model
+    info "Done. Restart with: ./local-ai.sh restart"
+    return 0
+  fi
   local profile; profile="$(cat "$STATE_DIR/profile" 2>/dev/null || detect_profile)"
   info "Pulling the latest container images ($profile profile)..."
   "${DOCKER_CMD[@]}" compose -f "$COMPOSE_FILE" --profile "$profile" pull
@@ -680,6 +830,7 @@ cmd_detect() {
     echo "GPU       : none detected — CPU profile"
   fi
   echo "Profile   : $(detect_profile) (LOCALAI_FORCE can override)"
+  echo "Backend   : $(detect_backend) (LOCALAI_BACKEND=mlx|docker; mlx = native Metal on Apple Silicon)"
   echo ""
   echo "Model     : $MODEL_FILE"
   echo "  repo    : $MODEL_REPO"
@@ -689,6 +840,15 @@ cmd_detect() {
     echo "  on disk : no (downloaded on 'start')"
   fi
   echo "mmproj    : $([ -f "$MODEL_DIR/$MMPROJ_FILE" ] && echo "present (vision on)" || echo "absent (vision off)")"
+  if [ "$(detect_backend)" = "mlx" ]; then
+    if [ -d "$MLX_MODEL" ]; then
+      echo "MLX model : $MLX_MODEL (local dir)"
+    elif [ -f "$MODEL_DIR/mlx/${MLX_MODEL##*/}/config.json" ]; then
+      echo "MLX model : $MLX_MODEL (on disk: $MODEL_DIR/mlx/${MLX_MODEL##*/})"
+    else
+      echo "MLX model : $MLX_MODEL (not downloaded yet)"
+    fi
+  fi
   echo "Ports     : llama $LLAMA_PORT (127.0.0.1) | webui $WEBUI_PORT (127.0.0.1)"
 }
 

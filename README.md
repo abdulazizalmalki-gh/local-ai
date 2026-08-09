@@ -93,7 +93,8 @@ On every `start`, the script:
 |----------|----------------|-------------|
 | Linux (any distro) | `apt` / `dnf` / `pacman` | CUDA (NVIDIA), Vulkan (AMD/Intel), CPU |
 | Windows (WSL2) | Docker Desktop, or `apt` inside WSL | CUDA (NVIDIA, via WSL drivers), CPU |
-| macOS (Intel & Apple Silicon) | Docker Desktop via Homebrew | CPU (Docker containers cannot reach the Metal GPU — Apple Silicon runs the arm64 CPU build; fast enough for a 2B model) |
+| macOS (Apple Silicon) | Docker Desktop via Homebrew (+ Python venv for MLX) | **MLX (Metal, native on host)** — max performance; Open WebUI stays in Docker |
+| macOS (Intel) | Docker Desktop via Homebrew | CPU (Docker container) |
 
 ### NVIDIA prerequisites
 
@@ -118,17 +119,24 @@ On every `start`, the script:
   LOCALAI_LLAMA_IMAGE_TAG=server-cuda-bXXXX ./local-ai.sh start
   ```
 
-### Apple Silicon
+### macOS (Apple Silicon): MLX backend
 
-Docker Desktop on macOS runs Linux containers in a VM — there is no Metal
-passthrough, so the container uses the CPU. If you want Metal acceleration,
-run `llama-server` natively on the host and point Open WebUI at it:
+Docker containers cannot reach the Metal GPU on macOS, so on Apple Silicon the
+script runs **mlx-lm natively on the host** (Apple's MLX framework, Metal-
+accelerated — the fastest option on M-series Macs) and keeps Open WebUI in
+Docker, pointed at the host server. First run creates a Python venv
+(`~/.local/share/local-ai/mlx-venv`) and downloads the MLX 4-bit model
+(`~/ai-models/mlx/`, ~1.5 GB).
 
-```bash
-LOCALAI_OPENAI_BASE=http://host.docker.internal:18080/v1 ./local-ai.sh start
-```
+Trade-offs vs the Docker path:
+- Model format is MLX safetensors, not GGUF — default
+  `Giniiki/Huihui-Qwen3.5-2B-abliterated-mlx-4bit`, overridable via
+  `LOCALAI_MLX_MODEL` (repo id or local directory).
+- No vision (mmproj) on the MLX path — the MLX quants are text-only.
+- Thinking is off by default (`LOCALAI_MLX_REASONING=on` re-enables it).
 
-(the compose file is otherwise identical).
+Force the containerized Docker path on Apple Silicon:
+`LOCALAI_BACKEND=docker ./local-ai.sh start`. Intel Macs always use Docker.
 
 ### Running on WSL2
 
@@ -172,6 +180,9 @@ directory (docker compose reads it automatically; exported env vars win).
 | `LOCALAI_CTX_GPU` / `LOCALAI_CTX_CPU` | `16384` / `8192` | Context size per profile |
 | `LOCALAI_REASONING` | `off` | llama.cpp `--reasoning` mode. `off` = direct answers (default; the 2B model's thinking phase is very long); `on`/`auto` re-enables reasoning |
 | `LOCALAI_LLAMA_IMAGE_TAG` | *(pinned)* | Override the llama.cpp image tag for the NVIDIA profile (e.g. `server-cuda-b4726`) to match older drivers; bypasses the CUDA pre-flight |
+| `LOCALAI_BACKEND` | `auto` | `auto` (MLX on Apple Silicon, Docker elsewhere) \| `mlx` \| `docker` |
+| `LOCALAI_MLX_MODEL` | `Giniiki/Huihui-Qwen3.5-2B-abliterated-mlx-4bit` | MLX model (HF repo id or local dir) for the Apple Silicon backend |
+| `LOCALAI_MLX_REASONING` | `off` | MLX thinking toggle (`off` passes `enable_thinking: false` to the chat template) |
 | `LOCALAI_YES` | `0` | Set `1` to auto-confirm every prompt (same as `--yes`) |
 | `LOCALAI_FORCE` | *(auto)* | `cpu` \| `nvidia` \| `vulkan` — skip detection |
 | `LOCALAI_API_KEY` | `local-ai` | Dummy key sent to llama.cpp (not a secret) |

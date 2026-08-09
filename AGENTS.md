@@ -47,9 +47,11 @@ project went fully container-based. `local-ai.sh` is the only entry point.
    `ensure_nvidia_runtime` verifies the Docker `nvidia` runtime exists and can
    offer to install `nvidia-container-toolkit` (official NVIDIA repo) on apt
    systems; declines degrade to CPU.
-5. **`check_cuda_driver`** (nvidia profile only) — reads the driver's CUDA
-   version (`nvidia-smi --query-gpu=driver_version,cuda_version`) and fails
-   fast with remedies when it's below `REQUIRED_CUDA` (constant at the top of
+5. **`check_cuda_driver`** (nvidia profile only) — parses the CUDA version
+   from the `nvidia-smi` header (`CUDA (UMD )?Version:` regex — bare-metal
+   says "CUDA Version:", WSL2 says "CUDA UMD Version:";
+   `--query-gpu=cuda_version` does NOT exist, never use it) and fails fast
+   with remedies when it's below `REQUIRED_CUDA` (constant at the top of
    the script — bump it whenever the `server-cuda` image tag's CUDA base is
    bumped; `LOCALAI_LLAMA_IMAGE_TAG` pins a tag and bypasses the check).
    **`check_wsl_memory`** — on WSL2, warns when the distro has < 5 GB RAM

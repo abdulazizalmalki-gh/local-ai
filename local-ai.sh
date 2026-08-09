@@ -348,19 +348,24 @@ check_cuda_driver() {
   command -v nvidia-smi >/dev/null 2>&1 \
     || { warn "nvidia-smi not found; skipping the CUDA pre-flight check."; return 0; }
   local line driver cuda
-  line="$(nvidia-smi --query-gpu=driver_version,cuda_version --format=csv,noheader 2>/dev/null | head -1)"
-  driver="${line%%,*}"; cuda="${line##*,}"
+  # The CUDA version is only present in the header block, and the label
+  # differs between bare-metal ("CUDA Version:") and WSL2 ("CUDA UMD
+  # Version:") — there is no queryable cuda_version field.
+  line="$(nvidia-smi 2>/dev/null | grep -m1 -oE 'CUDA (UMD )?Version: [0-9]+\.[0-9]+' || true)"
+  cuda="${line##*Version: }"
   if [ -z "$cuda" ]; then
     warn "Could not read the CUDA version from nvidia-smi; skipping the pre-flight check."
     return 0
   fi
+  # driver version is still queryable; used only in the error message
+  driver="$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1)"
   if version_ge "$cuda" "$REQUIRED_CUDA"; then
     info "CUDA driver OK (CUDA $cuda >= required $REQUIRED_CUDA)."
     return 0
   fi
   error "NVIDIA driver too old for the pinned llama.cpp CUDA image."
   echo "    Required: CUDA >= $REQUIRED_CUDA  (ghcr.io/ggml-org/llama.cpp:server-cuda)"
-  echo "    You have: CUDA $cuda  (driver $driver)"
+  echo "    You have: CUDA $cuda  (driver ${driver:-n/a})"
   echo "    Remedies:"
   echo "      - update your NVIDIA driver to one supporting CUDA $REQUIRED_CUDA or newer, or"
   echo "      - pin an older compatible image:  LOCALAI_LLAMA_IMAGE_TAG=server-cuda-bXXXX ./local-ai.sh start"

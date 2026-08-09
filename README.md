@@ -105,12 +105,14 @@ On every `start`, the script:
   12.8, so your driver must support CUDA ≥ 12.8. Check with:
 
   ```bash
-  nvidia-smi --query-gpu=driver_version,cuda_version --format=csv,noheader
+  nvidia-smi | grep -oE 'CUDA (UMD )?Version: [0-9.]+'
+  # bare-metal: CUDA Version: 12.6      WSL2: CUDA UMD Version: 13.3
   ```
 
-  The script checks this up front and fails fast with remedies — before any
-  model or image download — instead of pulling gigabytes and then dying.
-  Driver too old? Update it, or pin an older compatible image:
+  The script parses that header line (handling both label variants) and
+  fails fast with remedies — before any model or image download — instead of
+  pulling gigabytes and then dying. Driver too old? Update it, or pin an
+  older compatible image:
 
   ```bash
   LOCALAI_LLAMA_IMAGE_TAG=server-cuda-bXXXX ./local-ai.sh start
